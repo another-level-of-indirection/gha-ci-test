@@ -61,7 +61,135 @@ We debugged `another-level-of-indirection/buzz-tui` on branch `hybrid-monorepo`:
 
 `gha-ci-test` was created **relay-first** on day one. `git ls-remote` works immediately. Push works. Same relay, same auth — different provisioning history.
 
-**Do not try to retrofit relay git onto a GitHub-only announcement.** Start fresh with a new repo id or ask relay ops to seed the pointer.
+**Do not try to retrofit relay git onto a GitHub-only announcement.** Start fresh with a new repo id or ask relay ops to seed the pointer (see below).
+
+---
+
+## What "seed the pointer" means
+
+### The filing cabinet has an index card
+
+When you push to `https://lotf.communities.buzz.xyz/git/<owner>/<repo-id>`, the relay does not look up your repo by reading Nostr. It looks up a **server-side index entry** — we call this the **pointer** — that maps the pair `(owner_pubkey, repo_id)` to a slot in the relay's git object store.
+
+Think of it this way:
+
+| Layer | What it is | Who updates it |
+|-------|-----------|----------------|
+| **Nostr announcement** (kind:30617) | The address book — clone URLs, channel binding, repo name | You, via `buzz repos create` or Desktop |
+| **Relay git pointer** | The index card that says "storage for this owner/repo-id lives *here*" | The relay, when it handles a relay-first announce |
+| **Git objects** | The actual commits, trees, blobs | `git push` after the pointer exists |
+
+A healthy repo has all three. `buzz-tui` has the announcement and local git objects on disk, but **no pointer** — so push authenticates and then 404s.
+
+### What happens on a normal (relay-first) create
+
+When you run:
+
+```bash
+buzz repos create --id gha-ci-test --clone https://lotf.communities.buzz.xyz/git/<you>/gha-ci-test ...
+```
+
+the relay does two things in one step:
+
+1. Publishes the Nostr announcement (the address book entry).
+2. **Seeds the pointer** — creates an empty git repository in object storage and records `(owner, gha-ci-test) → that repo`.
+
+That is why `git ls-remote` on `gha-ci-test` works immediately, even before your first push: the index card exists; the cabinet drawer is empty but real.
+
+### What went wrong with `buzz-tui`
+
+The hybrid fork's `buzz-tui` announcement was almost certainly **GitHub-only first** — clone URL pointed at `github.com`, no relay URL. The relay never created a pointer because nothing in that first announce asked for relay storage.
+
+Later, the announcement was updated (re-announced) with a relay clone URL added. Nostr is replaceable-by-`d` tag: the **head event** now shows the relay URL, and Desktop happily configures `git remote relay` from it. But the relay's git handler does **not** retroactively create a pointer just because the Nostr head changed. Re-announce updates the address book; it does not build the filing cabinet.
+
+**Verified today:**
+
+```bash
+# buzz-tui — pointer absent
+git ls-remote https://lotf.communities.buzz.xyz/git/ec2dd863…/buzz-tui
+# → repository not found
+
+# gha-ci-test — pointer present (relay-first from day one)
+git ls-remote https://lotf.communities.buzz.xyz/git/ec2dd863…/gha-ci-test
+# → lists refs/heads/main, etc.
+```
+
+Same owner, same relay, same auth — different provisioning history.
+
+### What "ask relay ops to seed the pointer" means
+
+**Relay ops** = whoever administers the Buzz relay backend (object store, git HTTP handler, D1/KV tables — whatever the deployment uses for git repo metadata).
+
+**Seed the pointer** = a **manual server-side operation** to create the missing index entry for an `(owner, repo_id)` pair that already has a valid Nostr announcement but never got relay storage at create time.
+
+Conceptually, ops would:
+
+1. Confirm the kind:30617 head for `ec2dd863…/buzz-tui` includes a relay clone URL and the correct `buzz-channel` tag (ACL).
+2. Create an empty git repository (or allocate an object-store namespace) for that `(owner, repo_id)`.
+3. Write the pointer record so `GET/POST /git/<owner>/<repo_id>` resolves instead of 404.
+4. Optionally set default branch metadata to match what Projects expects.
+
+This is **not** something you can do from the CLI or Desktop today. There is no `buzz repos provision` command. It is infrastructure surgery — equivalent to a DBA creating a missing database schema entry.
+
+**Who to ask:** the team running `lotf.communities.buzz.xyz` (or your relay operator). Provide:
+
+- Owner pubkey: `ec2dd863d2cf968900bf479839ef793c6c329c7e6abbdec410c104bbee6b5e3b`
+- Repo id: `buzz-tui`
+- Channel UUID: `ed2ce328-d866-4776-928a-4bf812b2414b` (for ACL verification)
+- Symptom: NIP-98 auth succeeds, `git push` returns `repository not found`
+- Ask: "Please seed the git object-store pointer for this pair, or confirm whether re-announce should have done it automatically (possible relay bug)."
+
+### Can this retrofit `buzz-tui`?
+
+**Yes, in principle** — if relay ops seed the pointer, `git push` to the existing relay URL should start working without changing the repo id or re-creating the Buzz project.
+
+**But there are extra complications specific to buzz-tui:**
+
+| Complication | Impact |
+|-------------|--------|
+| **Duplicate announcements** | Two kind:30617 heads share channel `ed2ce328…` with `d=buzz-tui`: Ian's (`0aa7d20f…`, GitHub-only) and the hybrid fork's (`ec2dd863…`, dual URLs). Projects may bind to the wrong head. Seeding the pointer fixes *push*; it does not merge two competing address-book entries. |
+| **Empty relay repo after seed** | Seeding creates an **empty** drawer. You still need an initial `git push` to populate it. If your local/ GitHub copy is ahead (it is — `hybrid-monorepo` has CI commits on GitHub), you push that history to relay after the pointer exists. |
+| **History mismatch** | Buzz PRs and local Desktop state may reference commits that only exist on GitHub today. After seeding, mirror GitHub → relay once (`git push relay --all`) so relay and GitHub agree. |
+| **No self-service** | You depend on ops turnaround. A new repo id (`buzz-tui-hybrid`) is immediate and under your control. |
+
+### Retrofit vs new repo id — decision guide
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **New repo id** (e.g. `buzz-tui-hybrid`, relay-first) | Works now, no ops ticket, clean ACL, no duplicate-head confusion | New Buzz project binding, update links, migrate channel association |
+| **Ops seed pointer** on existing `buzz-tui` | Keeps repo id, channel bindings, existing Buzz PRs | Requires relay admin, may not resolve duplicate Ian/fork announcements, still need initial push to populate |
+| **Do nothing** (GitHub-only workflow) | GHA already works on `hybrid-monorepo` | No relay push, no native Buzz git audit trail, Nick's relay-side workflow untested |
+
+**Practical recommendation for Nick's CI testing:** use `gha-ci-test` (or spin up another relay-first id). It proves the full loop without waiting on ops.
+
+**Practical recommendation for the buzz-tui hybrid fork:** if you want relay git on the *same* repo id, file the ops request above. If you want to move fast, announce `buzz-tui-hybrid` relay-first and bind Projects to that — treat the old `buzz-tui` id as legacy GitHub-only.
+
+### How to confirm a pointer was seeded (after ops or on a new repo)
+
+```bash
+RELAY="https://lotf.communities.buzz.xyz"
+OWNER="ec2dd863d2cf968900bf479839ef793c6c329c7e6abbdec410c104bbee6b5e3b"
+REPO_ID="buzz-tui"   # or gha-ci-test
+
+git ls-remote "${RELAY}/git/${OWNER}/${REPO_ID}"
+```
+
+| Result | Meaning |
+|--------|---------|
+| Lists refs (even empty) | Pointer exists — safe to `git push` |
+| `repository not found` | Pointer still absent — ops action incomplete or wrong owner/id |
+| Auth error | Different problem (credentials, not provisioning) |
+
+After a successful seed on `buzz-tui`, populate relay from your local checkout:
+
+```bash
+cd /path/to/buzz-tui
+git remote -v   # confirm relay URL points at ec2dd863…/buzz-tui
+git push relay hybrid-monorepo --all
+git push relay --tags   # if you use tags
+```
+
+Then continue the hybrid mirror habit: `git push origin` after relay pushes when you want GHA to run.
 
 ---
 
