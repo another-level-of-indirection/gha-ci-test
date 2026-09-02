@@ -47,6 +47,8 @@ Nick's workflow must include an explicit step to get commits onto GitHub (manual
 
 From Buzz Projects, relay push uses NIP-98 automatically. GitHub push from Desktop has **no credentials attached** — public clone/fetch only. You push to GitHub from a normal terminal with `gh` or SSH keys.
 
+**Agent shell counts:** a managed agent with terminal access on a machine that already has `gh` or SSH configured can run `git push origin` for you — that is still the manual mirror step, not Desktop automation.
+
 ---
 
 ## Why `buzz-tui` failed but this repo works
@@ -208,7 +210,7 @@ Then continue the hybrid mirror habit: `git push origin` after relay pushes when
    Buzz Desktop                              pass/fail badge
 ```
 
-**Today:** mirror is manual — after `git push relay`, run `git push origin`.
+**Today:** mirror is manual — after `git push relay`, run `git push origin` (you, or an agent session with shell + host GitHub auth).
 
 **Eventually:** Buzz channel workflow + `call_webhook` posts CI results back into the repo channel; `diff_posted` trigger can kick GitHub via `repository_dispatch`. That requires an owner/admin to create the webhook workflow in Desktop.
 
