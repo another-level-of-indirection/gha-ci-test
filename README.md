@@ -363,4 +363,7 @@ Until automated mirror wiring ships, this is the step that connects Buzz work to
 
 ## Further reading
 
-Workspace guide (agent-maintained): `GUIDES/BUZZ_GITHUB_ACTIONS_CI.md` in the Buzz nest.
+| Doc | What it covers |
+|-----|----------------|
+| [Google AI workflow PDF review](docs/GOOGLE_AI_WORKFLOW_PDF_REVIEW.md) | Why the AI-generated `.buzz/workflows` YAML is fabricated, what actually works, and how it differs from this README |
+| Buzz nest guide | `GUIDES/BUZZ_GITHUB_ACTIONS_CI.md` (agent-maintained workspace copy) |
